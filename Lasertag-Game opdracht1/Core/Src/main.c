@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : Main program body - IR Transmitter for Laser Tag
   ******************************************************************************
   * @attention
   *
@@ -14,6 +14,24 @@
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
+  * 
+  * IR TRANSMITTER CONFIGURATION:
+  * - TIM16: Generates 38kHz carrier wave on PA6 (IR LED driver)
+  *   - Frequency: 38.005 kHz
+  *   - Duty Cycle: 25%
+  *   - Output Pin: PA6 (TIM16_CH1, AF14)
+  * 
+  * - TIM15: Generates RC5 bit timing (889µs per bit)
+  *   - Output Pin: PA2 (TIM15_CH1, AF14) - for data visualization
+  * 
+  * - Button Input: PB4 (active LOW, internal pull-up)
+  * 
+  * - LED Indicator: PB3 (LD3) - blinks during transmission
+  * 
+  * NOTE: RC5_Encode_Init() overrides CubeMX timer configurations with
+  *       correct values for IR transmission
+  * 
+  ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -21,7 +39,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ir_common.h"
+#include "rc5_encode.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,7 +63,10 @@ TIM_HandleTypeDef htim15;
 TIM_HandleTypeDef htim16;
 
 /* USER CODE BEGIN PV */
-
+volatile uint8_t button_pressed = 0;       /* Button press flag */
+volatile uint32_t last_button_time = 0;    /* For debouncing */
+uint8_t rc5_address = 0;                   /* RC5 device address */
+uint8_t rc5_command = 12;                  /* RC5 command (Volume+) */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -53,7 +75,9 @@ static void MX_GPIO_Init(void);
 static void MX_TIM16_Init(void);
 static void MX_TIM15_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Button_Init(void);
+void Button_Check(void);
+void Test_GenerateContinuousPWM_PA6(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -93,6 +117,15 @@ int main(void)
   MX_TIM16_Init();
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
+  
+  /* Initialize Button */
+  Button_Init();
+  
+  /* Start TIM16 PWM output on PA6 (38kHz continuous carrier) */
+  HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
+  
+  /* Turn off LED initially */
+  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
 
   /* USER CODE END 2 */
 
@@ -103,6 +136,25 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    
+    /* Check for button press */
+    Button_Check();
+    
+    /* If button was pressed, blink LED */
+    if (button_pressed)
+    {
+      button_pressed = 0;
+      
+      /* Blink LED to confirm button press */
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+      HAL_Delay(100);
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+      
+      /* PA6 blijft continu de 38kHz blokgolf genereren */
+    }
+    
+    /* Small delay to reduce CPU usage */
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
@@ -123,16 +175,10 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Configure LSE Drive Capability
-  */
-  HAL_PWR_EnableBkUpAccess();
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
-
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = 0;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
@@ -161,10 +207,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-
-  /** Enable MSI Auto calibration
-  */
-  HAL_RCCEx_EnableMSIPLLMode();
 }
 
 /**
@@ -276,7 +318,7 @@ static void MX_TIM16_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 701;
+  sConfigOC.Pulse = 210;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -317,7 +359,6 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -345,6 +386,113 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief  Initialize button GPIO (PB4 as input with pull-up)
+  * @retval None
+  */
+void Button_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  
+  /* GPIO Ports Clock Enable (already enabled in MX_GPIO_Init) */
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  
+  /* Configure GPIO pin : PB4 (Button Input) */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;  /* Internal pull-up resistor */
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+}
+
+/**
+  * @brief  Check button state and set flag if pressed
+  * @note   Button is active LOW (pressed = 0, released = 1)
+  * @retval None
+  */
+void Button_Check(void)
+{
+  uint32_t current_time = HAL_GetTick();
+  
+  /* Check if button is pressed (active LOW) and debounce */
+  if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_RESET)
+  {
+    /* Debounce: only register press if 50ms has passed since last press */
+    if ((current_time - last_button_time) > 50)
+    {
+      button_pressed = 1;
+      last_button_time = current_time;
+    }
+  }
+}
+
+/**
+  * @brief  Generate continuous 38kHz PWM on PA6 for testing
+  * @note   This is a simplified test function to verify PA6 output
+  * @retval None
+  */
+void Test_GenerateContinuousPWM_PA6(void)
+{
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  
+  /* Stop en de-init TIM16 first (conflict vermijden met MX_TIM16_Init) */
+  HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
+  HAL_TIM_PWM_DeInit(&htim16);
+  
+  /* Enable clocks */
+  __HAL_RCC_TIM16_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  
+  /* Configure PA6 as TIM16_CH1 output */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF14_TIM16;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  
+  /* Configure TIM16 for 38kHz PWM */
+  /* Timer clock = 80MHz / (PSC+1) = 80MHz / 1 = 80MHz */
+  /* PWM frequency = 80MHz / (ARR+1) = 80MHz / 2105 = 38.005 kHz */
+  /* Duty cycle = CCR / ARR = 526 / 2105 = 25% */
+  
+  htim16.Instance = TIM16;
+  htim16.Init.Prescaler = 0;                  /* No prescaler: 80MHz */
+  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim16.Init.Period = 2105;                  /* ARR: 80MHz / 2105 = 38kHz */
+  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim16.Init.RepetitionCounter = 0;
+  htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  
+  if (HAL_TIM_PWM_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  
+  /* Configure PWM channel 1 */
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 526;                      /* CCR: 25% duty cycle */
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  
+  if (HAL_TIM_PWM_ConfigChannel(&htim16, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  
+  /* Start PWM generation on TIM16 Channel 1 */
+  if (HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  
+  /* PA6 should now output a continuous 38kHz square wave with 25% duty cycle */
+}
 
 /* USER CODE END 4 */
 
