@@ -368,8 +368,8 @@ void TIM_ForcedOC1Config(uint32_t action)
   /* Modify the Output Compare Mode for Channel 1 */
   uint32_t tmpccmrx = TimHandleHF.Instance->CCMR1;
   
-  /* Reset the OCxM bits in the CCMRx register */
-  tmpccmrx &= ~TIM_CCMR1_OC1M;
+  /* Reset the OC1M bits (bits 6:4 and bit 16) in the CCMR1 register */
+  tmpccmrx &= ~(TIM_CCMR1_OC1M | TIM_CCMR1_OC1M_3);
   
   if (action == TIM_FORCED_ACTIVE)
   {
@@ -378,8 +378,8 @@ void TIM_ForcedOC1Config(uint32_t action)
   }
   else
   {
-    /* Force inactive (no carrier) */
-    tmpccmrx |= action;
+    /* Force inactive level - carrier OFF */
+    tmpccmrx |= TIM_OCMODE_FORCED_INACTIVE;
   }
   
   /* Write to TIMx CCMR1 register */
