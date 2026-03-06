@@ -121,8 +121,15 @@ int main(void)
   /* Initialize Button */
   Button_Init();
   
+  /* Force update event to load ARR and CCR registers immediately */
+  __HAL_TIM_SET_COUNTER(&htim16, 0);
+  HAL_TIM_GenerateEvent(&htim16, TIM_EVENTSOURCE_UPDATE);
+  
   /* Start TIM16 PWM output on PA6 (38kHz continuous carrier) */
   HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
+  
+  /* Enable Main Output for advanced timer TIM16 (critical!) */
+  __HAL_TIM_MOE_ENABLE(&htim16);
   
   /* Turn off LED initially */
   HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
