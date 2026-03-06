@@ -158,6 +158,9 @@ void RC5_Encode_Init(void)
 
   /* Start PWM on TIM16 CH1 */
   HAL_TIM_PWM_Start(&TimHandleHF, TIM_CHANNEL_1);
+  
+  /* Enable Main Output for TIM16 (required for advanced timers!) */
+  __HAL_TIM_MOE_ENABLE(&TimHandleHF);
 
   /* ===== TIM15 Configuration: RC5 Bit Timing (889us period) ===== */
   HAL_TIM_OC_DeInit(&TimHandleLF);

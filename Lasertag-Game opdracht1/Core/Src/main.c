@@ -118,20 +118,12 @@ int main(void)
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
   
-  /* Initialize Button */
-  Button_Init();
+  /* Initialize RC5 Encoder - configures timers for IR transmission */
+  RC5_Encode_Init();
   
-  /* Force update event to load ARR and CCR registers immediately */
-  __HAL_TIM_SET_COUNTER(&htim16, 0);
-  HAL_TIM_GenerateEvent(&htim16, TIM_EVENTSOURCE_UPDATE);
-  
-  /* Start TIM16 PWM output on PA6 (38kHz continuous carrier) */
-  HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
-  
-  /* Enable Main Output for advanced timer TIM16 (critical!) */
-  __HAL_TIM_MOE_ENABLE(&htim16);
-  
-  /* Turn off LED initially */
+  /* Turn on LED to indicate system is ready */
+  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+  HAL_Delay(500);
   HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
 
   /* USER CODE END 2 */
@@ -144,24 +136,20 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     
-    /* Check for button press */
-    Button_Check();
+    /* Turn on LED during transmission */
+    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
     
-    /* If button was pressed, blink LED */
-    if (button_pressed)
-    {
-      button_pressed = 0;
-      
-      /* Blink LED to confirm button press */
-      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-      HAL_Delay(100);
-      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-      
-      /* PA6 blijft continu de 38kHz blokgolf genereren */
-    }
+    /* Send RC5 frame: Address=0, Command=12 (Volume+) */
+    RC5_Encode_SendFrame(rc5_address, rc5_command, RC5_CTRL_RESET);
     
-    /* Small delay to reduce CPU usage */
-    HAL_Delay(10);
+    /* Wait for transmission to complete (~25ms) */
+    HAL_Delay(30);
+    
+    /* Turn off LED */
+    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+    
+    /* Wait 1 second before next transmission */
+    HAL_Delay(1000);
   }
   /* USER CODE END 3 */
 }
@@ -441,36 +429,18 @@ void Button_Check(void)
   */
 void Test_GenerateContinuousPWM_PA6(void)
 {
-  TIM_OC_InitTypeDef sConfigOC = {0};
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* Don't de-init, just reconfigure the already initialized TIM16 */
   
-  /* Stop en de-init TIM16 first (conflict vermijden met MX_TIM16_Init) */
+  /* Stop current PWM if running */
   HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
-  HAL_TIM_PWM_DeInit(&htim16);
   
-  /* Enable clocks */
-  __HAL_RCC_TIM16_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
+  /* Reconfigure TIM16 for continuous 38kHz PWM */
+  /* System clock = 32MHz, Timer clock = 32MHz / (PSC+1) = 32MHz / 1 = 32MHz */
+  /* PWM frequency = 32MHz / (ARR+1) = 32MHz / 842 = 37.98 kHz */
+  /* Duty cycle = CCR / ARR = 210 / 842 = 25% */
   
-  /* Configure PA6 as TIM16_CH1 output */
-  GPIO_InitStruct.Pin = GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF14_TIM16;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-  
-  /* Configure TIM16 for 38kHz PWM */
-  /* Timer clock = 80MHz / (PSC+1) = 80MHz / 1 = 80MHz */
-  /* PWM frequency = 80MHz / (ARR+1) = 80MHz / 2105 = 38.005 kHz */
-  /* Duty cycle = CCR / ARR = 526 / 2105 = 25% */
-  
-  htim16.Instance = TIM16;
-  htim16.Init.Prescaler = 0;                  /* No prescaler: 80MHz */
-  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim16.Init.Period = 2105;                  /* ARR: 80MHz / 2105 = 38kHz */
-  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim16.Init.RepetitionCounter = 0;
+  htim16.Init.Prescaler = 0;                  /* No prescaler */
+  htim16.Init.Period = 842;                   /* ARR for ~38kHz */
   htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   
   if (HAL_TIM_PWM_Init(&htim16) != HAL_OK)
@@ -478,9 +448,10 @@ void Test_GenerateContinuousPWM_PA6(void)
     Error_Handler();
   }
   
-  /* Configure PWM channel 1 */
+  /* Configure PWM channel 1 with 25% duty cycle */
+  TIM_OC_InitTypeDef sConfigOC = {0};
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 526;                      /* CCR: 25% duty cycle */
+  sConfigOC.Pulse = 210;                      /* CCR: 25% duty cycle */
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -492,11 +463,20 @@ void Test_GenerateContinuousPWM_PA6(void)
     Error_Handler();
   }
   
+  /* GPIO is already configured by HAL_TIM_MspPostInit in MX_TIM16_Init */
+  
+  /* Force update to load new values into registers */
+  __HAL_TIM_SET_COUNTER(&htim16, 0);
+  HAL_TIM_GenerateEvent(&htim16, TIM_EVENTSOURCE_UPDATE);
+  
   /* Start PWM generation on TIM16 Channel 1 */
   if (HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
+  
+  /* CRITICAL: Enable Main Output for TIM16 (advanced timer requirement) */
+  __HAL_TIM_MOE_ENABLE(&htim16);
   
   /* PA6 should now output a continuous 38kHz square wave with 25% duty cycle */
 }
