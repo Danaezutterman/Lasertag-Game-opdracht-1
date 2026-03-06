@@ -124,12 +124,13 @@ void RC5_Encode_Init(void)
   HAL_TIM_PWM_DeInit(&TimHandleHF);
   
   /* Configure TIM16 for 38kHz PWM carrier
-   * Timer clock = 80MHz / (PSC+1) = 80MHz / 2 = 40MHz
-   * PWM frequency = 40MHz / (ARR+1) = 40MHz / 1053 = 38.005 kHz
-   * Duty cycle = CCR / ARR = 263 / 1053 = 25%
+   * System Clock = 32MHz (MSI 4MHz * PLL)
+   * Timer clock = 32MHz / (PSC+1) = 32MHz / 1 = 32MHz
+   * PWM frequency = 32MHz / (ARR+1) = 32MHz / 843 = 37.97 kHz
+   * Duty cycle = CCR / ARR = 210 / 842 = 24.94%
    */
-  TimHandleHF.Init.Period = 1053;              /* 1053 for 38kHz */
-  TimHandleHF.Init.Prescaler = 1;              /* PSC = 1 */
+  TimHandleHF.Init.Period = 842;               /* 842 for 38kHz at 32MHz */
+  TimHandleHF.Init.Prescaler = 0;              /* PSC = 0 (no prescaling) */
   TimHandleHF.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   TimHandleHF.Init.CounterMode = TIM_COUNTERMODE_UP;
   TimHandleHF.Init.RepetitionCounter = 0;
@@ -143,7 +144,7 @@ void RC5_Encode_Init(void)
 
   /* PWM Mode configuration: Channel 1 */
   ch_config.OCMode = TIM_OCMODE_PWM1;
-  ch_config.Pulse = 263;                       /* 263 for 25% duty */
+  ch_config.Pulse = 210;                       /* 210 for ~25% duty */
   ch_config.OCPolarity = TIM_OCPOLARITY_HIGH;
   ch_config.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   ch_config.OCFastMode = TIM_OCFAST_DISABLE;
@@ -166,12 +167,13 @@ void RC5_Encode_Init(void)
   HAL_TIM_OC_DeInit(&TimHandleLF);
 
   /* Configure TIM15 for RC5 bit timing
-   * Timer clock = 80MHz / (PSC+1) = 80MHz / 2 = 40MHz
-   * Bit period = 889us -> 40MHz * 889us = 35560 ticks
+   * System Clock = 32MHz
+   * Timer clock = 32MHz / (PSC+1) = 32MHz / 1 = 32MHz
+   * Bit period = 889us -> 32MHz * 0.000889s = 28448 ticks - 1 = 28447
    */
-  TimHandleLF.Init.Prescaler = 1;              /* PSC = 1 -> 40MHz */
+  TimHandleLF.Init.Prescaler = 0;              /* PSC = 0 -> 32MHz */
   TimHandleLF.Init.CounterMode = TIM_COUNTERMODE_UP;
-  TimHandleLF.Init.Period = 35556;             /* 35556 ticks for 889us */
+  TimHandleLF.Init.Period = 28447;             /* 28447 ticks for 889us at 32MHz */
   TimHandleLF.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   TimHandleLF.Init.RepetitionCounter = 0;
   TimHandleLF.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -369,8 +371,16 @@ void TIM_ForcedOC1Config(uint32_t action)
   /* Reset the OCxM bits in the CCMRx register */
   tmpccmrx &= ~TIM_CCMR1_OC1M;
   
-  /* Configure the Forced output Mode */
-  tmpccmrx |= action;
+  if (action == TIM_FORCED_ACTIVE)
+  {
+    /* Enable PWM mode to generate 38kHz carrier */
+    tmpccmrx |= TIM_OCMODE_PWM1;  /* PWM mode 1 */
+  }
+  else
+  {
+    /* Force inactive (no carrier) */
+    tmpccmrx |= action;
+  }
   
   /* Write to TIMx CCMR1 register */
   TimHandleHF.Instance->CCMR1 = tmpccmrx;
