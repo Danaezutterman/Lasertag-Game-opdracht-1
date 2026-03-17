@@ -63,10 +63,14 @@ TIM_HandleTypeDef htim15;
 TIM_HandleTypeDef htim16;
 
 /* USER CODE BEGIN PV */
-volatile uint8_t button_pressed = 0;       /* Button press flag */
-volatile uint32_t last_button_time = 0;    /* For debouncing */
+extern __IO uint32_t RC5SendOpCompleteFlag;
+RC5_Ctrl_t toggle_bit = RC5_CTRL_RESET;
 uint8_t rc5_address = 0;                   /* RC5 device address */
 uint8_t rc5_command = 12;                  /* RC5 command (Volume+) */
+uint8_t button_pressed = 0;                /* Button press flag */
+uint32_t last_button_time = 0;             /* Debounce timestamp (ms) */
+uint32_t last_tx_time = 0;                 /* Last RC5 frame start time */
+uint8_t tx_led_active = 0;                 /* LED pulse state during TX */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -122,9 +126,9 @@ int main(void)
   RC5_Encode_Init();
   
   /* Turn on LED to indicate system is ready */
-  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-  HAL_Delay(500);
   HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+  HAL_Delay(500);
+  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
 
   /* USER CODE END 2 */
 
@@ -136,20 +140,28 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     
-    /* Turn on LED during transmission */
-    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-    
-    /* Send RC5 frame: Address=0, Command=12 (Volume+) */
-    RC5_Encode_SendFrame(rc5_address, rc5_command, RC5_CTRL_RESET);
-    
-    /* Wait for transmission to complete (~25ms) */
-    HAL_Delay(30);
-    
-    /* Turn off LED */
-    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-    
-    /* Wait 1 second before next transmission */
-    HAL_Delay(1000);
+    uint32_t now = HAL_GetTick();
+
+    /* Start new RC5 frame every 1000ms (no button needed) */
+    if ((tx_led_active == 0) && ((now - last_tx_time) >= 1000U))
+    {
+      /* LD3 is active LOW: RESET = LED ON */
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+
+      RC5_Encode_SendFrame(rc5_address, rc5_command, toggle_bit);
+      toggle_bit = (toggle_bit == RC5_CTRL_RESET) ? RC5_CTRL_SET : RC5_CTRL_RESET;
+
+      last_tx_time = now;
+      tx_led_active = 1;
+    }
+
+    /* Keep LED on briefly to indicate TX, then force it off */
+    if ((tx_led_active == 1) && ((now - last_tx_time) >= 35U))
+    {
+      /* LD3 is active LOW: SET = LED OFF */
+      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+      tx_led_active = 0;
+    }
   }
   /* USER CODE END 3 */
 }
@@ -358,7 +370,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : VCP_RX_Pin */
   GPIO_InitStruct.Pin = VCP_RX_Pin;
