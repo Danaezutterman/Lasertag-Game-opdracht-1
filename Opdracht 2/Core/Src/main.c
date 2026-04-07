@@ -41,6 +41,7 @@
 #define RC5_FRAME_BITS         14U
 #define RC5_FRAME_HALFBITS     (RC5_FRAME_BITS * 2U)
 #define RC5_BUFFER_HALFBITS    64U
+/* Timing windows used to classify measured pulse widths into RC5 half/full bit times. */
 
 /* USER CODE END PD */
 
@@ -72,6 +73,7 @@ IR_Frame_t IR_FRAME;
 static uint8_t rc5Collecting = 0U;
 static uint8_t rc5HalfBits[RC5_BUFFER_HALFBITS];
 static uint8_t rc5HalfCount = 0U;
+/* Halfbit buffer stores logic levels after quantization for Manchester decoding. */
 
 /* USER CODE END PV */
 
@@ -132,6 +134,7 @@ int main(void)
 
   RC5_ResetState();
 
+  /* CH1 and CH2 captures are both needed: total period and low-time measurement. */
   if (HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
@@ -156,6 +159,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Main loop only formats already-decoded data; decode work is done in interrupts. */
     if (RC5FrameReceived != RESET)
     {
       printf("[RC5] Raw: 0x%04X | Addr: 0x%02X | Cmd: 0x%02X | Toggle: %d\r\n",
@@ -242,6 +246,7 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  /* Reset mode: each selected trigger edge restarts the timer, giving segment timing. */
   sSlaveConfig.SlaveMode = TIM_SLAVEMODE_RESET;
   sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
   sSlaveConfig.TriggerPolarity = TIM_TRIGGERPOLARITY_FALLING;
@@ -334,6 +339,7 @@ static void MX_GPIO_Init(void)
 
 int __io_putchar(int ch)
 {
+  /* Retarget printf single-character output to USART2. */
   HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1U, 100U);
   return ch;
 }
@@ -341,6 +347,7 @@ int __io_putchar(int ch)
 int _write(int file, char *ptr, int len)
 {
   (void)file;
+  /* Retarget libc buffered writes (printf strings) to USART2. */
   HAL_UART_Transmit(&huart2, (uint8_t *)ptr, (uint16_t)len, HAL_MAX_DELAY);
   return len;
 }
@@ -349,6 +356,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
   if ((htim->Instance == TIM2) && (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1))
   {
+    /* CH1 captures segment period, CH2 captures low portion of the same segment. */
     uint32_t periodUs = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
     uint32_t lowUs = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
     RC5_ProcessCapture(periodUs, lowUs);
@@ -359,6 +367,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM2)
   {
+    /* Timeout means stream likely ended; clear partial decode state. */
     if (RC5FrameReceived == RESET)
     {
       RC5_ResetState();
@@ -368,12 +377,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 static void RC5_ResetState(void)
 {
+  /* Keep function tiny: reset only state machine variables. */
   rc5Collecting = 0U;
   rc5HalfCount = 0U;
 }
 
 static uint8_t RC5_QuantizeHalfBits(uint32_t durationUs)
 {
+  /* Map measured segment durations to 1 or 2 halfbits, else invalid (0). */
   if ((durationUs >= RC5_HALF_MIN_US) && (durationUs <= RC5_HALF_MAX_US))
   {
     return 1U;
@@ -387,6 +398,7 @@ static uint8_t RC5_QuantizeHalfBits(uint32_t durationUs)
 
 static void RC5_AppendLevel(uint8_t level, uint8_t count)
 {
+  /* Push repeated logic level into the halfbit stream buffer. */
   while ((count > 0U) && (rc5HalfCount < RC5_BUFFER_HALFBITS))
   {
     rc5HalfBits[rc5HalfCount++] = level;
@@ -398,6 +410,7 @@ static void RC5_TryDecodeBuffer(void)
 {
   uint8_t offset;
 
+  /* Try small phase offsets because capture can start at different halfbit alignments. */
   for (offset = 0U; (offset < 3U) && ((offset + RC5_FRAME_HALFBITS) <= rc5HalfCount); offset++)
   {
     uint8_t i;
@@ -409,6 +422,7 @@ static void RC5_TryDecodeBuffer(void)
       uint8_t firstHalf = rc5HalfBits[offset + (2U * i)];
       uint8_t secondHalf = rc5HalfBits[offset + (2U * i) + 1U];
 
+      /* Manchester decode: 10 -> bit 1, 01 -> bit 0, all else invalid. */
       if ((firstHalf == 1U) && (secondHalf == 0U))
       {
         raw = (uint16_t)((raw << 1) | 1U);
@@ -429,6 +443,7 @@ static void RC5_TryDecodeBuffer(void)
       uint8_t fieldBit = (uint8_t)((raw >> 12) & 0x01U);
       uint8_t command = (uint8_t)(raw & 0x3FU);
 
+      /* RC5 extended command set: field bit extends command MSB when zero. */
       if (fieldBit == 0U)
       {
         command |= 0x40U;
@@ -449,6 +464,7 @@ static void RC5_TryDecodeBuffer(void)
 
   if (rc5HalfCount > 40U)
   {
+    /* Keep a trailing window to continue decoding across frame boundary/noise. */
     uint8_t keep = 28U;
     uint8_t i;
     for (i = 0U; i < keep; i++)
@@ -467,12 +483,14 @@ static void RC5_ProcessCapture(uint32_t periodUs, uint32_t lowUs)
 
   if ((periodUs == 0U) || (lowUs == 0U) || (lowUs >= periodUs))
   {
+    /* Reject malformed captures early. */
     RC5_ResetState();
     return;
   }
 
   if (rc5Collecting == 0U)
   {
+    /* First valid capture starts a new stream; prepend idle-high halfbit. */
     rc5Collecting = 1U;
     rc5HalfCount = 0U;
     RC5_AppendLevel(1U, 1U);
@@ -484,6 +502,7 @@ static void RC5_ProcessCapture(uint32_t periodUs, uint32_t lowUs)
 
   if ((lowHalfCount == 0U) || (highHalfCount == 0U))
   {
+    /* If one segment is out of timing window, restart decoder state machine. */
     RC5_ResetState();
     return;
   }
@@ -493,6 +512,7 @@ static void RC5_ProcessCapture(uint32_t periodUs, uint32_t lowUs)
 
   if (rc5HalfCount >= RC5_FRAME_HALFBITS)
   {
+    /* Attempt decode whenever at least one full RC5 frame worth of halfbits exists. */
     RC5_TryDecodeBuffer();
   }
 }
