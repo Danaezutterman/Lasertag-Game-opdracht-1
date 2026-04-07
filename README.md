@@ -66,16 +66,6 @@ sensorvariatie op te vangen.
 [RC5] Raw: 0x3XXX | Addr: 0xYY | Cmd: 0xZZ | Toggle: N
 ```
 
-## Mondelinge verdediging: korte praatlijn
-
-Gebruik dit als kapstok tijdens je uitleg:
-1. Meetprincipe: "Ik meet low en high duur per pulssegment met input capture."
-2. Kwantisatie: "Die tijden map ik naar 1 of 2 halfbits met tolerantievensters."
-3. Manchester: "Per bit verwacht ik ofwel 10 of 01; anders verwerp ik."
-4. Validatie: "Ik controleer de startbits voor een geldig RC5 frame."
-5. Parsing: "Dan splits ik raw frame in toggle, address en command."
-6. Debug: "Resultaat stuur ik via UART zodat ik live kan verifiëren."
-
 ## Troubleshooting
 
 ### Geen decode output
@@ -97,5 +87,3 @@ Gebruik dit als kapstok tijdens je uitleg:
 - Opdracht 2/Core/Src/stm32l4xx_it.c: interrupt handlers
 - Opdracht 2/Core/Src/stm32l4xx_hal_msp.c: GPIO/NVIC MSP configuratie
 
-## License
-Educational use only
