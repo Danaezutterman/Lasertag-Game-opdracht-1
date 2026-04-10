@@ -26,6 +26,8 @@
 #include "rc5_encode.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>  // NODIG voor atoi
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,24 +50,39 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim15;
 TIM_HandleTypeDef htim16;
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
-static uint8_t toggle_bit = 0;
-static uint8_t tx_address = 0;
-static uint8_t tx_command = 0;
+// Variabelen voor de IR-zender (RC5)
+uint8_t toggle_bit = 0;
+uint8_t tx_address = 0;    // Wordt aangepast via Bluetooth commando
+uint8_t tx_command = 0;    // Wordt aangepast via Bluetooth commando
+
+// Button handling
 static volatile uint8_t button_pressed = 0;
 static uint32_t last_button_tick = 0;
-#define DEBOUNCE_MS 300  /* Covers press + release bounce */
+#define DEBOUNCE_MS 300
+
+// Bluetooth & Opdracht 3 variabelen
+#define RX_BUF_SIZE 64
+uint8_t rx_buffer[RX_BUF_SIZE];      // De buffer waar DMA de Bluetooth data dumpt
+uint32_t player_hits[32] = {0};      // Hit-tracking: index is het RC5 adres (0-31)
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM15_Init(void);
 static void MX_TIM16_Init(void);
+static void MX_USART1_UART_Init(void);
+void Process_BLE_Commands(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -117,18 +134,37 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_TIM15_Init();
   MX_TIM16_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   IR_Transceiver_Init();
 
-  /* Quick boot banner — proves UART works */
+  /* 1. Debug banner naar PC via USB (huart2) */
   {
     const char *banner = "\r\n[BOOT] IR TX/RX ready (115200-8N1)\r\n";
     HAL_UART_Transmit(&huart2, (uint8_t *)banner, strlen(banner), 50);
   }
+	
+  /* --- OPDRACHT 1 & 2: Start DMA voor LilyGO (huart1) --- */
+
+  // 2. Start de cirkelvormige ontvangst (Luisteren naar Bluetooth commando's)
+  // Dit is essentieel voor Opdracht 3!
+  HAL_UART_Receive_DMA(&huart1, rx_buffer, RX_BUF_SIZE); // Luisteren starten
+
+  // Stuur pairing commando
+  const char *at_pair = "AT+ADV1\r\n"; 
+  HAL_UART_Transmit_DMA(&huart1, (uint8_t *)at_pair, strlen(at_pair));
+
+  HAL_Delay(500); // Geef de module tijd om de pairing mode te activeren
+
+  // Stuur bevestiging
+  const char *ble_msg = "Bluetooth DMA Link Active\r\n";
+  HAL_UART_Transmit_DMA(&huart1, (uint8_t *)ble_msg, strlen(ble_msg));
+	
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -139,24 +175,26 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
+    
+    // 1. Check op Bluetooth commando's (Opdracht 3)
+    Process_BLE_Commands();
     /* --- State machine processing --- */
     IR_Transceiver_Process();
 
-    /* --- TX trigger (button on PB3 temporarily, or serial command) --- */
+    /* --- TX trigger --- */
     if (button_pressed && IR_GetState() == IR_STATE_IDLE)
     {
-      toggle_bit ^= 1;
-      IR_StartTransmit(toggle_bit, tx_address, tx_command);
-      button_pressed = 0;
+    // Gebruik de variabelen die door de Bluetooth-commando's worden aangepast!
+    IR_StartTransmit(toggle_bit, tx_address, tx_command); 
+    
+    toggle_bit ^= 1;
+    button_pressed = 0;
 
-      char txbuf[64];
-      snprintf(txbuf, sizeof(txbuf), "[TX] Addr:0x%02X Cmd:0x%02X Tog:%d\r\n",
-               tx_address, tx_command, toggle_bit);
-      HAL_UART_Transmit(&huart2, (uint8_t *)txbuf, strlen(txbuf), 50);
+    // Bevestiging naar de Debug-poort (huart2)
+    char txbuf[64];
+    snprintf(txbuf, sizeof(txbuf), "[TX BT-SET] Addr:0x%02X Cmd:0x%02X\r\n", tx_address, tx_command);
+    HAL_UART_Transmit(&huart2, (uint8_t *)txbuf, strlen(txbuf), 50);
 
-      /* Increment command 0..63, then address 0..31 */
-      tx_command++;
-      if (tx_command > 63) { tx_command = 0; tx_address = (tx_address + 1) & 0x1F; }
     }
 
     /* --- RX frame received --- */
@@ -164,15 +202,23 @@ int main(void)
     {
       RC5_Decode(&RC5_FRAME);
 
+      // UPDATE HIT COUNTER (Opdracht 3)
+      if (RC5_FRAME.Address < 32) {
+          player_hits[RC5_FRAME.Address]++;
+      }
+
       char buf[64];
-      snprintf(buf, sizeof(buf), "[RX] Addr:0x%02X Cmd:0x%02X Tog:%d\r\n",
-               RC5_FRAME.Address, RC5_FRAME.Command, RC5_FRAME.ToggleBit);
+      snprintf(buf, sizeof(buf), "[RX] Addr:0x%02X Cmd:0x%02X Tog:%d | Hits: %lu\r\n",
+               RC5_FRAME.Address, RC5_FRAME.Command, RC5_FRAME.ToggleBit, 
+               player_hits[RC5_FRAME.Address]); // <--- OPTIONEEL: Hits tonen in debug
       HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 50);
 
       /* Quick LED blink */
       HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
       HAL_Delay(100);
       HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+      
+      RC5FrameReceived = 0; // Reset de flag zodat we weer een nieuw frame kunnen ontvangen
     }
   }
   /* USER CODE END 3 */
@@ -423,6 +469,41 @@ static void MX_TIM16_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -454,6 +535,25 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
@@ -500,6 +600,72 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+
+void BLE_Send_AT(char* command) {
+    // We gebruiken HAL_UART_Transmit_DMA voor huart1 (LilyGO)
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)command, strlen(command));
+    
+    // Omdat we DMA gebruiken voor TX, moeten we even wachten tot de transfer klaar is 
+    // voordat we de buffer hergebruiken voor een volgend commando.
+    while (huart1.gState != HAL_UART_STATE_READY); 
+}
+
+void Process_BLE_Commands(void) {
+    char response[128];
+
+    // 1. Controleer of er data in de buffer zit
+    if (rx_buffer[0] == '\0') return;
+
+    // 2. Commando: current_hits (Opdracht 3)
+    if (strstr((char*)rx_buffer, "current_hits")) {
+        // We sturen een overzicht van de hits per speler
+        sprintf(response, "\r\n--- HIT REPORT ---\r\nP1: %u | P2: %u | P3: %u\r\n", 
+        (unsigned int)player_hits[1], (unsigned int)player_hits[2], (unsigned int)player_hits[3]);
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t*)response, strlen(response));
+    }
+
+    // 3. Commando: set_address:"<waarde>"
+    else if (strstr((char*)rx_buffer, "set_address:")) {
+        char *ptr = strchr((char*)rx_buffer, ':');
+        if (ptr != NULL) {
+            tx_address = (uint8_t)atoi(ptr + 1);
+            sprintf(response, "TX Adres ingesteld op: %d\r\n", tx_address);
+            HAL_UART_Transmit_DMA(&huart1, (uint8_t*)response, strlen(response));
+        }
+    }
+
+    // 4. Commando: reset_hits
+    else if (strstr((char*)rx_buffer, "reset_hits")) {
+        for(int i=0; i<32; i++) player_hits[i] = 0;
+        const char* msg = "Alle hits zijn gewist.\r\n";
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t*)msg, strlen(msg));
+    }
+		
+		// Extra commando: set_command:"<waarde>"
+    else if (strstr((char*)rx_buffer, "set_command:")) {
+        char *ptr = strchr((char*)rx_buffer, ':');
+        if (ptr != NULL) {
+            tx_command = (uint8_t)atoi(ptr + 1); // <--- tx_command aanpassen
+            sprintf(response, "TX Commando ingesteld op: %d\r\n", tx_command);
+            HAL_UART_Transmit_DMA(&huart1, (uint8_t*)response, strlen(response));
+        }
+    }
+
+    // Extra commando: current_settings
+    else if (strstr((char*)rx_buffer, "current_settings")) {
+        sprintf(response, "\r\nInstellingen -> Adres: %d | Commando: %d\r\n", tx_address, tx_command);
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t*)response, strlen(response));
+    }
+
+    // 5. Onbekend commando (Foutafhandeling eis)
+    else {
+        const char* err = "Fout: Onbekend commando.\r\n";
+        HAL_UART_Transmit_DMA(&huart1, (uint8_t*)err, strlen(err));
+    }
+
+    // MAAK DE BUFFER LEEG (Cruciaal voor DMA)
+    memset(rx_buffer, 0, RX_BUF_SIZE);
+}
 /* USER CODE END 4 */
 
 /**
