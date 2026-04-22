@@ -66,6 +66,45 @@ sensorvariatie op te vangen.
 [RC5] Raw: 0x3XXX | Addr: 0xYY | Cmd: 0xZZ | Toggle: N
 ```
 
+## BLE app commando's (Opdracht 3)
+
+Gebruik onderstaande commando's exact zoals geschreven.
+
+### Ondersteunde commando's
+- `current_settings`
+- `set_address:"<waarde>"` (geldig: 0-31)
+- `set_command:"<waarde>"` (geldig: 0-63)
+- `current_hits`
+- `reset_hits`
+
+### Voorbeelden om in te vullen in de app
+```text
+current_settings
+set_address:"5"
+set_command:"12"
+current_hits
+reset_hits
+```
+
+### Verwachte antwoorden
+```text
+current_settings address=5 command=12
+set_address OK 5
+set_command OK 12
+current_hits 0=0 1=0 2=3 ...
+reset_hits OK
+```
+
+### Veelgemaakte fouten
+- Gebruik `_` (underscore), niet `spatie`: dus `set_address` en `set_command`.
+- Typ de dubbelepunt `:` mee.
+- Waarde buiten bereik geeft een fout:
+```text
+ERROR invalid_address
+ERROR invalid_command
+ERROR unknown_command
+```
+
 ## Troubleshooting
 
 ### Geen decode output
