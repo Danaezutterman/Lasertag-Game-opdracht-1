@@ -45,6 +45,7 @@ Assuming:
 - MCU output voltage = 3.3V
 - Transistor Vce(sat) ≈ 0.2V
 
+<<<<<<< Updated upstream
 Resistor = (3.3V - Vce(sat) - Vf) / If
 Resistor = (3.3 - 0.2 - 1.2) / 0.1
 Resistor = 19Ω (use 22Ω standard value)
@@ -83,6 +84,54 @@ Duty Cycle = CCR / ARR = 263 / 1053 = 24.98% ≈ 25%
   - Output: PA2 (TIM15_CH1, AF14) - optional for debugging
 
 **Calculations:**
+=======
+### Ondersteunde commando's
+- `current_settings`
+- `set_address:<waarde>` of `set_address:"<waarde>"` (geldig: 0-31)
+- `set_command:<waarde>` of `set_command:"<waarde>"` (geldig: 0-63)
+- `current_hits`
+- `reset_hits`
+- `set_name:<naam>` of `set_name:"<naam>"` (max. 16 karakters)
+- `set_team_color:<kleur>` of `set_team_color:"<kleur>"` (hex, bv. `#RRGGBB` of `0xRRGGBB`)
+- `simulate_hit` of `HIT`
+
+### Voorbeelden om in te vullen in de app
+```text
+current_settings
+set_address:5
+set_command:12
+current_hits
+reset_hits
+set_name:Alice
+set_team_color:#00AAFF
+simulate_hit
+```
+
+### Verwachte antwoorden
+```text
+current_settings address=5 command=12
+set_address OK 5
+set_command OK 12
+current_hits 0=0 1=0 2=3 ...
+reset_hits OK
+set_name OK Alice
+set_team_color OK #00AAFF
+simulate_hit OK hp=4
+```
+
+`reset_hits` zet voortaan ook de lokale hitpoints terug naar het maximum en ververst het scherm.
+
+De BLE-parser accepteert de meeste commando's ook zonder aanhalingstekens. Alleen als je een spatie in de naam wilt gebruiken, mag je nog altijd `set_name:"Mijn Naam"` sturen.
+
+### Veelgemaakte fouten
+- Gebruik `_` (underscore), niet `spatie`: dus `set_address` en `set_command`.
+- Typ de dubbelepunt `:` mee.
+- Waarde buiten bereik geeft een fout:
+```text
+ERROR invalid_address
+ERROR invalid_command
+ERROR unknown_command
+>>>>>>> Stashed changes
 ```
 Timer Clock = 80MHz / (PSC + 1) = 80MHz / 2 = 40MHz
 Bit Period = ARR / Timer Clock = 35556 / 40MHz = 0.8889 ms = 889µs
